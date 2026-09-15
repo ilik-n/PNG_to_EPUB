@@ -31,6 +31,9 @@ TARGET_LANG = "en"   # English │ e.g. "de", "fr", "he", "es" …
 # How long to wait between translation requests (seconds) to avoid rate-limiting
 TRANSLATE_DELAY = 0.3
 
+# Languages that should be rendered right-to-left
+RTL_LANGS = {"he", "ar", "fa", "ur", "yi"}
+
 # Danish abbreviations that should NOT trigger sentence splits
 DANISH_ABBREVIATIONS = [
     "bl.a", "fx", "ca", "dvs", "osv", "pga", "ifm", "ift",
@@ -133,6 +136,7 @@ def transform_chapter_html(html_content: str, translator: GoogleTranslator) -> s
     Headings and non-paragraph elements are left untouched.
     """
     soup = BeautifulSoup(html_content, "html.parser")
+    rtl_target = TARGET_LANG.lower() in RTL_LANGS
 
     for p in soup.find_all("p"):
         raw_text = p.get_text(separator=" ").strip()
@@ -150,7 +154,12 @@ def transform_chapter_html(html_content: str, translator: GoogleTranslator) -> s
 
             # Translated sentence — no top margin, generous bottom to separate from next pair
             trans_text = translate_sentence(sentence, translator)
-            trans_p = soup.new_tag("p", style="margin-top: 0; margin-bottom: 1.2em;")
+            trans_style = "margin-top: 0; margin-bottom: 1.2em;"
+            if rtl_target:
+                trans_style += " direction: rtl; text-align: right;"
+            trans_p = soup.new_tag("p", style=trans_style)
+            if rtl_target:
+                trans_p["dir"] = "rtl"
             em_tag = soup.new_tag("em")
             em_tag.string = trans_text
             trans_p.append(em_tag)
