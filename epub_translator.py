@@ -21,7 +21,7 @@ import zipfile
 import nltk
 from bs4 import BeautifulSoup
 from ebooklib import epub, ITEM_DOCUMENT
-from deep_translator import GoogleTranslator
+from deep_translator import GoogleTranslator, MyMemoryTranslator
 
 # ── Language constants ────────────────────────────────────────────────────────
 SOURCE_LANG = "da"   # Danish  │ Change to any Google Translate language code
@@ -29,7 +29,25 @@ TARGET_LANG = "en"   # English │ e.g. "de", "fr", "he", "es" …
 # ─────────────────────────────────────────────────────────────────────────────
 
 # How long to wait between translation requests (seconds) to avoid rate-limiting
-TRANSLATE_DELAY = 0.3
+TRANSLATE_DELAY = 1.0   # Google free endpoint throttles hard; keep well under 5 req/s
+MAX_ATTEMPTS = 6
+_CACHE: dict[str, str] = {}
+_google_blocked_until = 0.0
+_fallback = None
+
+
+def _get_fallback():
+    """MyMemory translator used when Google rate-limits us (needs xx-YY codes)."""
+    global _fallback
+    if _fallback is None:
+        try:
+            codes = MyMemoryTranslator(source="english", target="danish").get_supported_languages(as_dict=True)
+            codes = list(codes.values())
+            pick = lambda l: next(c for c in codes if c.lower().startswith(l.lower() + "-"))
+            _fallback = MyMemoryTranslator(source=pick(SOURCE_LANG), target=pick(TARGET_LANG))
+        except Exception:
+            _fallback = False
+    return _fallback or None
 
 # Languages that should be rendered right-to-left
 RTL_LANGS = {"he", "ar", "fa", "ur", "yi"}
@@ -114,16 +132,32 @@ def translate_sentence(text: str, translator: GoogleTranslator) -> str:
     text = text.strip()
     if not text:
         return ""
-    for attempt in range(3):
+    if text in _CACHE:
+        return _CACHE[text]
+    global _google_blocked_until
+    fb = _get_fallback()
+    for attempt in range(MAX_ATTEMPTS):
+        use_google = time.time() >= _google_blocked_until
         try:
-            result = translator.translate(text)
+            if use_google:
+                result = translator.translate(text)
+            elif fb:
+                result = fb.translate(text)
+            else:
+                raise RuntimeError("no fallback available")
+            result = result or text
+            _CACHE[text] = result
             time.sleep(TRANSLATE_DELAY)
-            return result or text
+            return result
         except Exception as e:
-            if attempt == 2:
-                print(f"  ⚠️  Translation failed after 3 attempts: {e}")
+            if use_google and "too many requests" in str(e).lower() and fb:
+                # Google has throttled us: use MyMemory for a few minutes
+                _google_blocked_until = time.time() + 300
+                continue
+            if attempt == MAX_ATTEMPTS - 1:
+                print(f"  ⚠️  Translation failed after {MAX_ATTEMPTS} attempts: {str(e)[:80]}")
                 return text
-            time.sleep(1.5)
+            time.sleep(min(5 * 2 ** attempt, 60))
     return text
 
 
